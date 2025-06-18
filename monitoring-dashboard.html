@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Registration Monitoring</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 30px;
+            background: #f8fafc;
+            border-bottom: 2px solid #e2e8f0;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .control-group label {
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        select, input {
+            padding: 10px 15px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1rem;
+            background: white;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #e53e3e 0%, #c53030 100%);
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #38a169 0%, #2f855a 100%);
+        }
+
+        .stats-section {
+            padding: 20px 30px;
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-card {
+            background: #f8fafc;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-number.success { color: #38a169; }
+        .stat-number.warning { color: #d69e2e; }
+        .stat-number.danger { color: #e53e3e; }
+        .stat-number.primary { color: #667eea; }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: #6b7280;
+            font-weight: 500;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-indicator.active {
+            background: #38a169;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.inactive {
+            background: #e53e3e;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(56, 161, 105, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(56, 161, 105, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(56, 161, 105, 0); }
+        }
+
+        .table-section {
+            padding: 0 30px 30px;
+            background: white;
+        }
+
+        .table-container {
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            overflow: hidden;
+            background: white;
+        }
+
+        .table-header {
+            background: #f8fafc;
+            padding: 15px 20px;
+            border-bottom: 2px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .table-header-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .table-wrapper {
+            max-height: 600px;
+            overflow: auto;
+            border-radius: 0 0 12px 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            min-width: 1400px; /* Ensure minimum width for all columns */
+        }
+
+        th, td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+            white-space: nowrap;
+        }
+
+        th {
+            background: #f8fafc;
+            font-weight: 600;
+            color: #4a5568;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        /* Fixed column widths for consistency */
+        th:nth-child(1), td:nth-child(1) { width: 100px; } /* Booking ID */
+        th:nth-child(2), td:nth-child(2) { width: 140px; } /* Actual Registration */
+        th:nth-child(3), td:nth-child(3) { width: 140px; } /* Image 1 */
+        th:nth-child(4), td:nth-child(4) { width: 140px; } /* Image 2 */
+        th:nth-child(5), td:nth-child(5) { width: 140px; } /* Image 3 */
+        th:nth-child(6), td:nth-child(6) { width: 140px; } /* Image 4 */
+        th:nth-child(7), td:nth-child(7) { width: 100px; } /* Best Percentage */
+        th:nth-child(8), td:nth-child(8) { width: 80px; } /* VIN */
+        th:nth-child(9), td:nth-child(9) { width: 100px; } /* VIN Percentage */
+        th:nth-child(10), td:nth-child(10) { width: 120px; } /* Match Status */
+        th:nth-child(11), td:nth-child(11) { width: 100px; } /* Created */
+
+        tbody tr {
+            transition: all 0.3s ease;
+        }
+
+        tbody tr:hover {
+            background: #f0f4ff;
+        }
+
+        tbody tr.new-row {
+            animation: highlightRow 3s ease-out;
+        }
+
+        @keyframes highlightRow {
+            0% { background: #48bb78; color: white; }
+            100% { background: transparent; color: inherit; }
+        }
+
+        .match-exact { 
+            background: #c6f6d5; 
+            color: #22543d; 
+            padding: 4px 8px; 
+            border-radius: 4px; 
+            font-weight: 600;
+        }
+
+        .match-close { 
+            background: #faf089; 
+            color: #744210; 
+            padding: 4px 8px; 
+            border-radius: 4px; 
+            font-weight: 600;
+        }
+
+        .match-none { 
+            background: #feb2b2; 
+            color: #742a2a; 
+            padding: 4px 8px; 
+            border-radius: 4px; 
+            font-weight: 600;
+        }
+
+        .image-cell {
+            max-width: 140px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-size: 0.8rem;
+        }
+
+        .percentage-cell {
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .percentage-high { color: #38a169; }
+        .percentage-medium { color: #d69e2e; }
+        .percentage-low { color: #e53e3e; }
+
+        .vin-cell {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .log-section {
+            padding: 20px 30px;
+            background: #f8fafc;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 5px 0;
+        }
+
+        .log-entry.success { color: #38a169; }
+        .log-entry.error { color: #e53e3e; }
+        .log-entry.info { color: #667eea; }
+
+        .export-section {
+            padding: 15px 20px;
+            background: #f0f9ff;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+        }
+
+        @media (max-width: 768px) {
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .control-group {
+                justify-content: space-between;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .table-section {
+                padding: 0 15px 15px;
+            }
+
+            .container {
+                max-width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Bounce Registration Monitoring</h1>
+            <p>Live monitoring of vehicle registration detection accuracy</p>
+        </div>
+
+        <!-- Controls Section -->
+        <div class="controls">
+            <div class="control-group">
+                <label for="refreshInterval">Refresh Interval:</label>
+                <select id="refreshInterval">
+                    <option value="30">30 seconds</option>
+                    <option value="60" selected>60 seconds</option>
+                    <option value="120">2 minutes</option>
+                    <option value="300">5 minutes</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="serverUrl">Server:</label>
+                <select id="serverUrl">
+                    <option value="http://localhost:3001">localhost:3001 (Analysis Service)</option>
+                    <option value="http://localhost:3000">localhost:3000 (OCR Service)</option>
+                </select>
+            </div>
+
+            <button class="btn" id="startBtn" onclick="startMonitoring()">
+                <span>🚀</span> Start Monitoring
+            </button>
+
+            <button class="btn btn-danger" id="stopBtn" onclick="stopMonitoring()" disabled>
+                <span>🛑</span> Stop Monitoring
+            </button>
+
+            <button class="btn btn-secondary" onclick="clearTable()">
+                <span>🗑️</span> Clear Table
+            </button>
+        </div>
+
+        <!-- Export Section -->
+        <div class="export-section">
+            <div style="display: flex; gap: 10px;">
+                <button class="btn btn-success" onclick="exportResults('json')">
+                    <span>📄</span> Export JSON
+                </button>
+                <button class="btn btn-success" onclick="exportResults('csv')">
+                    <span>📊</span> Export CSV
+                </button>
+            </div>
+        </div>
+
+        <!-- Stats Section -->
+        <div class="stats-section">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number primary" id="totalProcessed">0</div>
+                    <div class="stat-label">
+                        <span class="status-indicator inactive" id="statusIndicator"></span>
+                        Total Processed
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number success" id="exactMatches">0</div>
+                    <div class="stat-label">Exact Matches</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number primary" id="accuracyRate">0%</div>
+                    <div class="stat-label">Accuracy Rate</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number warning" id="lastUpdate">Never</div>
+                    <div class="stat-label">Last Update</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="runTime">00:00:00</div>
+                    <div class="stat-label">Runtime</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table Section -->
+        <div class="table-section">
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>📊 Registration Analysis Results</h3>
+                    <div class="table-header-actions">
+                        <span id="tableCount">0 bookings</span>
+                        <span style="font-size: 0.9rem; color: #6b7280;">💡 Scroll horizontally to see all columns</span>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table id="resultsTable">
+                        <thead>
+                            <tr>
+                                <th>Booking ID</th>
+                                <th>Actual Registration</th>
+                                <th>Image 1</th>
+                                <th>Image 2</th>
+                                <th>Image 3</th>
+                                <th>Image 4</th>
+                                <th>Best %</th>
+                                <th>VIN</th>
+                                <th>VIN %</th>
+                                <th>Match Status</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsBody">
+                            <!-- Dynamic rows will be inserted here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log Section -->
+        <div class="log-section" id="logSection">
+            <div class="log-entry info">🚀 Ready to start monitoring...</div>
+        </div>
+    </div>
+
+    <script>
+        let monitoringInterval = null;
+        let startTime = null;
+        let processedBookings = new Set(); // Track processed booking IDs
+        let stats = {
+            totalProcessed: 0,
+            exactMatches: 0,
+            accuracyRate: 0
+        };
+
+        function addLogEntry(message, type = 'info') {
+            const logSection = document.getElementById('logSection');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+            
+            logSection.insertBefore(entry, logSection.firstChild);
+            
+            // Keep only last 50 entries
+            const entries = logSection.querySelectorAll('.log-entry');
+            if (entries.length > 50) {
+                entries[entries.length - 1].remove();
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('totalProcessed').textContent = stats.totalProcessed;
+            document.getElementById('exactMatches').textContent = stats.exactMatches;
+            document.getElementById('accuracyRate').textContent = 
+                stats.totalProcessed > 0 ? Math.round((stats.exactMatches / stats.totalProcessed) * 100) + '%' : '0%';
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+            
+            // Update table count
+            document.getElementById('tableCount').textContent = `${stats.totalProcessed} bookings`;
+        }
+
+        function updateRunTime() {
+            if (startTime) {
+                const elapsed = Date.now() - startTime;
+                const hours = Math.floor(elapsed / 3600000);
+                const minutes = Math.floor((elapsed % 3600000) / 60000);
+                const seconds = Math.floor((elapsed % 60000) / 1000);
+                
+                document.getElementById('runTime').textContent = 
+                    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            }
+        }
+
+        function getPercentageClass(percentage) {
+            if (percentage >= 80) return 'percentage-high';
+            if (percentage >= 50) return 'percentage-medium';
+            return 'percentage-low';
+        }
+
+        function addTableRow(booking) {
+            const tbody = document.getElementById('resultsBody');
+            const row = document.createElement('tr');
+            row.className = 'new-row';
+            
+            // Determine match status styling
+            let matchStatusClass = 'match-none';
+            if (booking['Match Status'].includes('EXACT')) {
+                matchStatusClass = 'match-exact';
+            }
+            
+            // Format percentages
+            const bestPercentage = booking['Best Percentage Match'] || 0;
+            const vinPercentage = booking['VIN Percentage Match'] || 0;
+            
+            row.innerHTML = `
+                <td>${booking['Booking ID']}</td>
+                <td><strong>${booking['Actual Registration']}</strong></td>
+                <td class="image-cell">${booking['Image 1'] || 'N/A'}</td>
+                <td class="image-cell">${booking['Image 2'] || 'N/A'}</td>
+                <td class="image-cell">${booking['Image 3'] || 'N/A'}</td>
+                <td class="image-cell">${booking['Image 4'] || 'N/A'}</td>
+                <td class="percentage-cell ${getPercentageClass(bestPercentage)}">${bestPercentage}%</td>
+                <td class="vin-cell">${booking['VIN'] || 'N/A'}</td>
+                <td class="percentage-cell ${getPercentageClass(vinPercentage)}">${vinPercentage}%</td>
+                <td><span class="${matchStatusClass}">${booking['Match Status']}</span></td>
+                <td>${booking.Created}</td>
+            `;
+            
+            // Insert at the top of the table
+            tbody.insertBefore(row, tbody.firstChild);
+            
+            // Update stats
+            stats.totalProcessed++;
+            if (booking['Match Status'].includes('EXACT')) {
+                stats.exactMatches++;
+            }
+            
+            // Track this booking as processed
+            processedBookings.add(booking['Booking ID']);
+            
+            updateStats();
+            addLogEntry(`Processed Booking ${booking['Booking ID']} - ${booking['Match Status']} - Best: ${bestPercentage}% - VIN: ${vinPercentage}%`, 
+                       booking['Match Status'].includes('EXACT') ? 'success' : 'info');
+        }
+
+        async function exportResults(format) {
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            try {
+                addLogEntry(`Starting ${format.toUpperCase()} export...`, 'info');
+                
+                const response = await fetch(`${serverUrl}/export/results?format=${format}`);
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `analysis_results_${new Date().toISOString().split('T')[0]}.${format}`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    
+                    addLogEntry(`${format.toUpperCase()} export completed successfully`, 'success');
+                } else {
+                    const errorData = await response.json();
+                    addLogEntry(`Export failed: ${errorData.error || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                addLogEntry(`Export error: ${error.message}`, 'error');
+            }
+        }
+
+        async function fetchAndUpdateResults() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            const analysisType = 'smart'; // Always use smart analysis
+            
+            try {
+                addLogEntry('Fetching new results...', 'info');
+                
+                const response = await fetch(`${serverUrl}/analyze/${analysisType}`);
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    // Filter out bookings we've already processed
+                    const newBookings = data.table_data.filter(booking => 
+                        !processedBookings.has(booking['Booking ID'])
+                    );
+                    
+                    if (newBookings.length > 0) {
+                        addLogEntry(`Found ${newBookings.length} new booking(s)`, 'success');
+                        
+                        // Add new bookings to table
+                        newBookings.forEach(booking => {
+                            addTableRow(booking);
+                        });
+                    } else {
+                        addLogEntry('No new bookings found', 'info');
+                    }
+                } else {
+                    throw new Error(data.error || 'Failed to fetch results');
+                }
+                
+            } catch (error) {
+                addLogEntry(`Error fetching results: ${error.message}`, 'error');
+                console.error('Monitoring error:', error);
+            }
+        }
+
+        async function startMonitoring() {
+            const interval = parseInt(document.getElementById('refreshInterval').value) * 1000;
+            
+            try {
+                // First, start the background monitoring
+                const serverUrl = document.getElementById('serverUrl').value;
+                addLogEntry('Starting background monitoring...', 'info');
+                
+                const monitorResponse = await fetch(`${serverUrl}/monitor/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ hours: 4 })
+                });
+                
+                const monitorData = await monitorResponse.json();
+                
+                if (!monitorResponse.ok) {
+                    if (monitorData.error && monitorData.error.includes('already running')) {
+                        addLogEntry('Background monitoring already running', 'info');
+                    } else {
+                        throw new Error(monitorData.error || 'Failed to start background monitoring');
+                    }
+                } else {
+                    addLogEntry('Background monitoring started successfully', 'success');
+                }
+                
+                // Reset state
+                processedBookings.clear();
+                stats = { totalProcessed: 0, exactMatches: 0, accuracyRate: 0 };
+                startTime = Date.now();
+                
+                // Update UI
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                document.getElementById('statusIndicator').className = 'status-indicator active';
+                
+                // Start dashboard polling
+                fetchAndUpdateResults(); // Initial fetch
+                monitoringInterval = setInterval(fetchAndUpdateResults, interval);
+                
+                // Start runtime counter
+                const runtimeInterval = setInterval(() => {
+                    if (monitoringInterval) {
+                        updateRunTime();
+                    } else {
+                        clearInterval(runtimeInterval);
+                    }
+                }, 1000);
+                
+                addLogEntry(`Dashboard polling started (${interval/1000}s interval)`, 'success');
+                
+            } catch (error) {
+                addLogEntry(`Error starting monitoring: ${error.message}`, 'error');
+                console.error('Start monitoring error:', error);
+            }
+        }
+
+        async function stopMonitoring() {
+            try {
+                // Stop background monitoring
+                const serverUrl = document.getElementById('serverUrl').value;
+                const response = await fetch(`${serverUrl}/monitor/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (response.ok) {
+                    addLogEntry('Background monitoring stopped', 'info');
+                } else {
+                    addLogEntry('Could not stop background monitoring', 'error');
+                }
+            } catch (error) {
+                addLogEntry(`Error stopping background monitoring: ${error.message}`, 'error');
+            }
+            
+            // Stop dashboard polling
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+                monitoringInterval = null;
+            }
+            
+            // Update UI
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('statusIndicator').className = 'status-indicator inactive';
+            
+            addLogEntry('Dashboard monitoring stopped', 'info');
+        }
+
+        function clearTable() {
+            document.getElementById('resultsBody').innerHTML = '';
+            processedBookings.clear();
+            stats = { totalProcessed: 0, exactMatches: 0, accuracyRate: 0 };
+            updateStats();
+            addLogEntry('Table cleared', 'info');
+        }
+
+        // Initialize runtime display
+        updateRunTime();
+        updateStats();
+        
+        // Initialize page
+        window.onload = function() {
+            addLogEntry('Dashboard loaded and ready', 'success');
+        };
+    </script>
+</body>
+</html>
