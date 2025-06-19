@@ -225,7 +225,7 @@
             width: 100%;
             border-collapse: collapse;
             font-size: 0.85rem;
-            min-width: 1400px; /* Ensure minimum width for all columns */
+            min-width: 1400px;
         }
 
         th, td {
@@ -252,7 +252,7 @@
         th:nth-child(5), td:nth-child(5) { width: 140px; } /* Image 3 */
         th:nth-child(6), td:nth-child(6) { width: 140px; } /* Image 4 */
         th:nth-child(7), td:nth-child(7) { width: 100px; } /* Best Percentage */
-        th:nth-child(8), td:nth-child(8) { width: 80px; } /* VIN */
+        th:nth-child(8), td:nth-child(8) { width: 100px; } /* VIN */
         th:nth-child(9), td:nth-child(9) { width: 100px; } /* VIN Percentage */
         th:nth-child(10), td:nth-child(10) { width: 120px; } /* Match Status */
         th:nth-child(11), td:nth-child(11) { width: 100px; } /* Created */
@@ -359,8 +359,26 @@
             background: #f0f9ff;
             border-bottom: 1px solid #e2e8f0;
             display: flex;
-            justify-content: flex-end;
+            justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .ocr-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: #4a5568;
+        }
+
+        .ocr-status.available {
+            color: #38a169;
+        }
+
+        .ocr-status.unavailable {
+            color: #e53e3e;
         }
 
         @media (max-width: 768px) {
@@ -383,6 +401,11 @@
 
             .container {
                 max-width: 100%;
+            }
+
+            .export-section {
+                flex-direction: column;
+                align-items: stretch;
             }
         }
     </style>
@@ -407,10 +430,13 @@
             </div>
 
             <div class="control-group">
-                <label for="serverUrl">Server:</label>
-                <select id="serverUrl">
-                    <option value="http://localhost:3001">localhost:3001 (Analysis Service)</option>
-                    <option value="http://localhost:3000">localhost:3000 (OCR Service)</option>
+                <label for="monitoringHours">Monitoring Duration:</label>
+                <select id="monitoringHours">
+                    <option value="1">1 hour</option>
+                    <option value="2">2 hours</option>
+                    <option value="4" selected>4 hours</option>
+                    <option value="8">8 hours</option>
+                    <option value="24">24 hours</option>
                 </select>
             </div>
 
@@ -425,10 +451,17 @@
             <button class="btn btn-secondary" onclick="clearTable()">
                 <span>🗑️</span> Clear Table
             </button>
+
+            <button class="btn btn-secondary" onclick="testOCR()">                <!-- why? -->
+                <span>🔍</span> Test OCR
+            </button>
         </div>
 
         <!-- Export Section -->
         <div class="export-section">
+            <div class="ocr-status" id="ocrStatus">
+                <span>🤖</span> <span id="ocrStatusText">Checking OCR status...</span>
+            </div>
             <div style="display: flex; gap: 10px;">
                 <button class="btn btn-success" onclick="exportResults('json')">
                     <span>📄</span> Export JSON
@@ -450,12 +483,12 @@
                     </div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-number success" id="exactMatches">0</div>
-                    <div class="stat-label">Exact Matches</div>
+                    <div class="stat-number success" id="vinMatches">0</div>
+                    <div class="stat-label">VIN Exact Matches</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-number primary" id="accuracyRate">0%</div>
-                    <div class="stat-label">Accuracy Rate</div>
+                    <div class="stat-label">VIN Accuracy Rate</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-number warning" id="lastUpdate">Never</div>
@@ -515,9 +548,58 @@
         let processedBookings = new Set(); // Track processed booking IDs
         let stats = {
             totalProcessed: 0,
-            exactMatches: 0,
+            vinMatches: 0,
             accuracyRate: 0
         };
+
+        const SERVER_URL = 'http://localhost:3001';
+
+        async function checkOCRStatus() {
+            try {
+                const response = await fetch(`${SERVER_URL}/health`);
+                const data = await response.json();
+                
+                const ocrStatusElement = document.getElementById('ocrStatus');
+                const ocrStatusText = document.getElementById('ocrStatusText');
+                
+                if (data.azure_vision_configured) {
+                    ocrStatusElement.className = 'ocr-status available';
+                    ocrStatusText.textContent = 'Integrated Azure OCR Available';
+                    addLogEntry('Azure OCR service is configured and ready', 'success');
+                } else {
+                    ocrStatusElement.className = 'ocr-status unavailable';
+                    ocrStatusText.textContent = 'Azure OCR Not Configured';
+                    addLogEntry('Warning: Azure OCR not configured. Set VISION_KEY and VISION_ENDPOINT environment variables.', 'error');
+                }
+            } catch (error) {
+                const ocrStatusElement = document.getElementById('ocrStatus');
+                const ocrStatusText = document.getElementById('ocrStatusText');
+                ocrStatusElement.className = 'ocr-status unavailable';
+                ocrStatusText.textContent = 'Service Unavailable';
+                addLogEntry(`Error checking OCR status: ${error.message}`, 'error');
+            }
+        }
+
+        async function testOCR() {
+            addLogEntry('Testing OCR functionality...', 'info');
+            
+            // Get a sample image URL from the database
+            try {
+                const response = await fetch(`${SERVER_URL}/health`);
+                const healthData = await response.json();
+                
+                if (!healthData.azure_vision_configured) {
+                    addLogEntry('Cannot test OCR: Azure Computer Vision not configured', 'error');
+                    return;
+                }
+                
+                // Test with a placeholder URL (you might want to add a test endpoint with sample images)
+                addLogEntry('OCR service is configured. Use the monitoring feature to test with real booking images.', 'info');
+                
+            } catch (error) {
+                addLogEntry(`OCR test failed: ${error.message}`, 'error');
+            }
+        }
 
         function addLogEntry(message, type = 'info') {
             const logSection = document.getElementById('logSection');
@@ -536,12 +618,9 @@
 
         function updateStats() {
             document.getElementById('totalProcessed').textContent = stats.totalProcessed;
-            document.getElementById('exactMatches').textContent = stats.exactMatches;
-            document.getElementById('accuracyRate').textContent = 
-                stats.totalProcessed > 0 ? Math.round((stats.exactMatches / stats.totalProcessed) * 100) + '%' : '0%';
+            document.getElementById('vinMatches').textContent = stats.vinMatches;
+            document.getElementById('accuracyRate').textContent = stats.accuracyRate + '%';
             document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
-            
-            // Update table count
             document.getElementById('tableCount').textContent = `${stats.totalProcessed} bookings`;
         }
 
@@ -595,27 +674,19 @@
             // Insert at the top of the table
             tbody.insertBefore(row, tbody.firstChild);
             
-            // Update stats
-            stats.totalProcessed++;
-            if (booking['Match Status'].includes('EXACT')) {
-                stats.exactMatches++;
-            }
-            
             // Track this booking as processed
             processedBookings.add(booking['Booking ID']);
             
-            updateStats();
             addLogEntry(`Processed Booking ${booking['Booking ID']} - ${booking['Match Status']} - Best: ${bestPercentage}% - VIN: ${vinPercentage}%`, 
                        booking['Match Status'].includes('EXACT') ? 'success' : 'info');
         }
 
         async function exportResults(format) {
-            const serverUrl = document.getElementById('serverUrl').value;
             
             try {
                 addLogEntry(`Starting ${format.toUpperCase()} export...`, 'info');
                 
-                const response = await fetch(`${serverUrl}/export/results?format=${format}`);
+                const response = await fetch(`${SERVER_URL}/export/results?format=${format}`);
                 
                 if (response.ok) {
                     const blob = await response.blob();
@@ -639,13 +710,10 @@
         }
 
         async function fetchAndUpdateResults() {
-            const serverUrl = document.getElementById('serverUrl').value;
-            const analysisType = 'smart'; // Always use smart analysis
-            
             try {
                 addLogEntry('Fetching new results...', 'info');
                 
-                const response = await fetch(`${serverUrl}/analyze/${analysisType}`);
+                const response = await fetch(`${SERVER_URL}/analyze/smart`);
                 const data = await response.json();
                 
                 if (response.ok && data.success) {
@@ -664,6 +732,12 @@
                     } else {
                         addLogEntry('No new bookings found', 'info');
                     }
+
+                    stats.totalProcessed = data.total_processed || 0;
+                    stats.vinMatches = data.exact_matches || 0;
+                    stats.accuracyRate = data.accuracy_percentage || 0;
+                    updateStats();
+
                 } else {
                     throw new Error(data.error || 'Failed to fetch results');
                 }
@@ -675,17 +749,16 @@
         }
 
         async function startMonitoring() {
+            const hours = parseInt(document.getElementById('monitoringHours').value);
             const interval = parseInt(document.getElementById('refreshInterval').value) * 1000;
             
             try {
-                // First, start the background monitoring
-                const serverUrl = document.getElementById('serverUrl').value;
                 addLogEntry('Starting background monitoring...', 'info');
                 
-                const monitorResponse = await fetch(`${serverUrl}/monitor/start`, {
+                const monitorResponse = await fetch(`${SERVER_URL}/monitor/start`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ hours: 4 })
+                    body: JSON.stringify({ hours: hours })
                 });
                 
                 const monitorData = await monitorResponse.json();
@@ -702,7 +775,7 @@
                 
                 // Reset state
                 processedBookings.clear();
-                stats = { totalProcessed: 0, exactMatches: 0, accuracyRate: 0 };
+                stats = { totalProcessed: 0, vinMatches: 0, accuracyRate: 0 };
                 startTime = Date.now();
                 
                 // Update UI
@@ -733,9 +806,7 @@
 
         async function stopMonitoring() {
             try {
-                // Stop background monitoring
-                const serverUrl = document.getElementById('serverUrl').value;
-                const response = await fetch(`${serverUrl}/monitor/stop`, {
+                const response = await fetch(`${SERVER_URL}/monitor/stop`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 });
@@ -766,7 +837,7 @@
         function clearTable() {
             document.getElementById('resultsBody').innerHTML = '';
             processedBookings.clear();
-            stats = { totalProcessed: 0, exactMatches: 0, accuracyRate: 0 };
+            stats = { totalProcessed: 0, vinMatches: 0, accuracyRate: 0 };
             updateStats();
             addLogEntry('Table cleared', 'info');
         }
@@ -778,6 +849,7 @@
         // Initialize page
         window.onload = function() {
             addLogEntry('Dashboard loaded and ready', 'success');
+            checkOCRStatus();
         };
     </script>
 </body>

@@ -3,9 +3,16 @@ import pg from 'pg';
 import fetch from 'node-fetch';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import sharp from 'sharp';
+import { promisify } from 'util';
+
+// Azure Computer Vision imports
+import { ComputerVisionClient } from '@azure/cognitiveservices-computervision';
+import { ApiKeyCredentials } from '@azure/ms-rest-js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const sleep = promisify(setTimeout);       // why?
 
 // =====================================================================================
 // CONTINUOUS ANALYSIS SERVICE WITH REAL-TIME MONITORING
@@ -22,8 +29,14 @@ const dbConfig = {
     password: '37s_.gP0[o$[9CDo',
 };
 
-// Configuration
-const OCR_SERVICE_URL = 'http://localhost:3000';
+// Azure Computer Vision configuration
+const AZURE_VISION_KEY = process.env.VISION_KEY;
+const AZURE_VISION_ENDPOINT = process.env.VISION_ENDPOINT;
+
+if (!AZURE_VISION_KEY || !AZURE_VISION_ENDPOINT) {
+    console.error('⚠️  Warning: Azure Computer Vision credentials not found in environment variables');
+    console.error('Set VISION_KEY and VISION_ENDPOINT environment variables for OCR functionality');
+}
 const ANALYSIS_PORT = 3001;
 
 // VIN accuracy threshold (configurable)
@@ -45,20 +58,108 @@ let monitoringStats = {
 let processedBookingsCache = [];
 const MAX_CACHE_SIZE = 100;
 
+// Create Azure Computer Vision client
+let computerVisionClient = null;
+if (AZURE_VISION_KEY && AZURE_VISION_ENDPOINT) {
+    const normalizedEndpoint = AZURE_VISION_ENDPOINT.endsWith('/') ? 
+        AZURE_VISION_ENDPOINT.slice(0, -1) : AZURE_VISION_ENDPOINT;
+    
+    computerVisionClient = new ComputerVisionClient(
+        new ApiKeyCredentials({ inHeader: { 'Ocp-Apim-Subscription-Key': AZURE_VISION_KEY } }),
+        normalizedEndpoint
+    );
+    console.log('✅ Azure Computer Vision client initialized');
+} else {
+    console.log('❌ Azure Computer Vision client not initialized - OCR will be disabled');
+}
+
 const app = express();
 app.use(express.json());
 
-// Add CORS headers
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    next();
-});
+// // Add CORS headers
+// app.use((req, res, next) => {
+//     res.header('Access-Control-Allow-Origin', '*');
+//     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+//     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    
+//     if (req.method === 'OPTIONS') {
+//         return res.status(200).end(); 
+//     }
+// });
 
 // Serve the monitoring dashboard
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'monitoring-dashboard.html'));
 });
+
+// Function to extract text from image buffer using Azure OCR
+async function extractTextFromImageUrl(imageUrl) {
+    if (!computerVisionClient) {
+        throw new Error('Azure Computer Vision not configured. Set VISION_KEY and VISION_ENDPOINT environment variables.');
+    }
+
+    try {
+        // Download and compress the image first
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+            throw new Error(`Failed to download image: ${response.statusText}`);
+        }
+        
+        const imageArrayBuffer = await response.arrayBuffer();
+        const imageBuffer = Buffer.from(imageArrayBuffer);
+        
+        // Compress the image using Sharp to ensure it's under 4MB
+        const compressedBuffer = await sharp(imageBuffer)
+            .resize(1200, null, {
+                withoutEnlargement: true,
+                fit: 'inside'
+            })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+        
+        console.log(`Image compressed: ${imageBuffer.length} -> ${compressedBuffer.length} bytes`);
+        
+        // Call Azure Computer Vision Read API
+        const readResult = await computerVisionClient.readInStream(compressedBuffer, {
+            language: 'en',
+            detectOrientation: true,
+        });
+        
+        const operationId = readResult.operationLocation.split('/').slice(-1)[0];    // why use async operation?
+        
+        let result;
+        let attempts = 0;
+        const maxAttempts = 30;
+        
+        while (result?.status !== "succeeded" && attempts < maxAttempts) {
+            await sleep(1000);
+            result = await computerVisionClient.getReadResult(operationId);
+            attempts++;
+            
+            if (result?.status === "failed") {
+                throw new Error('OCR operation failed');
+            }
+        }
+        
+        if (attempts >= maxAttempts) {
+            throw new Error('OCR operation timed out');
+        }
+        
+        // Extract text from all pages
+        const extractedText = [];
+        for (const page of result.analyzeResult.readResults) {
+            for (const line of page.lines) {
+                extractedText.push(line.text);
+            }
+        }
+        
+        return extractedText;
+        
+    } catch (error) {
+        console.error('OCR Error:', error);
+        throw error;
+    }
+}
 
 // =====================================================================================
 // SMART PARSING LOGIC
@@ -73,48 +174,111 @@ function getIndianStateCodes() {
 }
 
 function scoreRegistrationCandidate(str) {
-    if (!str || str.length < 8 || str.length > 10) return 0;
+    console.log(`\n=== Scoring candidate: "${str}" ===`);
+
+    if (!str || str.length < 8 || str.length > 10){
+        console.log('Failed basic validation (length check)');
+        return 0;
+    }
     
     const stateCodes = getIndianStateCodes();
     let score = 0;
+    console.log('Initial score:', score);
     
     const stateCode = stateCodes.find(code => str.startsWith(code));
-    if (!stateCode) return 0;
-    
+    if (!stateCode){
+        console.log('No valid state code found at start');
+        return 0;
+    }
+
+    console.log(`Found state code: "${stateCode}"`);
     score += 100;
+    console.log('Score after state code:', score);
     
     const commonStates = ['DL', 'NCR', 'KA', 'UP'];
     if (commonStates.includes(stateCode)) {
+        console.log(`"${stateCode}" is a common state, adding 20 points`);
         score += 20;
+        console.log('Score after common state bonus:', score);
+    } else {
+        console.log(`"${stateCode}" is not a common state, no bonus`);
     }
     
     const afterState = str.substring(stateCode.length);
+    console.log(`Text after state code: "${afterState}"`);
     
     if (/^\d{1,2}[A-Z]{1,2}\d{4}$/.test(afterState)) {
+        console.log('Matches pattern: 1-2 digits + 1-2 letters + 4 digits, adding 50 points');
         score += 50;
     } else if (/^[A-Z]{1,2}\d{4,5}$/.test(afterState)) {
+        console.log('Matches pattern: 1-2 letters + 4-5 digits, adding 40 points');
         score += 40;
     } else if (/^\d+[A-Z]+\d+$/.test(afterState)) {
+        console.log('Matches pattern: digits + letters + digits, adding 30 points');
         score += 30;
     } else if (/^\d+$/.test(afterState)) {
+        console.log('Matches pattern: only digits, adding 10 points');
         score += 10;
+    }else {
+        console.log('No pattern match for remaining text, no points added');
+    }
+    console.log('Score after pattern matching:', score);
+    
+    if (str.length === 10) {
+        console.log('Length is 10, adding 15 points');
+        score += 15;
+    } else if (str.length === 9) {
+        console.log('Length is 9, adding 10 points');
+        score += 10;
+    } else if (str.length === 8) {
+        console.log('Length is 8, adding 5 points');
+        score += 5;
+    }
+    console.log('Score after length bonus:', score);
+    
+    if (str.includes('O0') || str.includes('0O')) {
+        console.log('Contains O0 or 0O pattern, subtracting 10 points');
+        score -= 10;
+        console.log('Score after O0/0O penalty:', score);
     }
     
-    if (str.length === 10) score += 15;
-    else if (str.length === 9) score += 10;
-    else if (str.length === 8) score += 5;
+    if (str.includes('I1') || str.includes('1I')) {
+        console.log('Contains I1 or 1I pattern, subtracting 10 points');
+        score -= 10;
+        console.log('Score after I1/1I penalty:', score);
+    }
     
-    if (str.includes('O0') || str.includes('0O')) score -= 10;
-    if (str.includes('I1') || str.includes('1I')) score -= 10;
+    console.log(`=== Final score for "${str}": ${score} ===\n`);
     
     return score;
 }
 
+function applyMandatoryAQCorrection(text) {
+    const normalized = normalizeRegNumber(text);
+    console.log('=== AQ Pattern Correction ===');
+    console.log('Original detected:', text);
+    console.log('After normalization:', normalized);
+    
+    // Pattern: KA + 2digits + A0 + 4digits (length 9 or 10)
+    const aqPattern = /^(KA\d{1,2})A0(\d+)$/;
+    const match = normalized.match(aqPattern);
+    
+    if (match) {
+        const corrected = match[1] + 'AQ' + match[2];
+        console.log(`🔧 Mandatory AQ Pattern Applied: ${normalized} → ${corrected}`);
+        return corrected;
+    }
+    
+    console.log('No AQ pattern found, returning original');
+    return normalized;
+}
+
 function applyTargetedOCRCorrections(text) {
     let corrected = text.toUpperCase();
-    
+    console.log('Before correction:', corrected);
+
     const corrections = [
-        ['Q', '0'], ['O', '0'], ['S', '5'], ['B', '8'], ['G', '6'], ['Z', '2']
+        ['S', '9'], ['0', 'Q'], ['O', '0'], ['S', '5'], ['B', '8'], ['G', '6'], ['Z', '2']
     ];
     
     let bestCandidate = corrected;
@@ -122,8 +286,10 @@ function applyTargetedOCRCorrections(text) {
     
     corrections.forEach(([from, to]) => {
         if (corrected.includes(from)) {
+            console.log(`Going for correction due to ${from} in `, corrected);
             const candidate = corrected.replace(new RegExp(from, 'g'), to);
             const score = scoreRegistrationCandidate(candidate);
+            console.log(`Trying correction ${from} → ${to}:`, candidate, 'Score:', score);
             if (score > bestScore) {
                 bestScore = score;
                 bestCandidate = candidate;
@@ -143,13 +309,15 @@ function parseIndianRegistrationNumber(textArray) {
         const cleaned = line.toUpperCase().replace(/[^A-Z0-9]/g, '');
         
         if (cleaned.length >= 8 && cleaned.length <= 10) {
-            const score = scoreRegistrationCandidate(cleaned);
+            // Apply mandatory AQ correction FIRST, before any scoring
+            const aqCorrected = applyMandatoryAQCorrection(cleaned);
+            const score = scoreRegistrationCandidate(aqCorrected);
             if (score > 0) {
-                candidates.push({ text: cleaned, score, source: `line_${index + 1}` });
+                candidates.push({ text: aqCorrected, score, source: `line_${index + 1}_aq_corrected` });
             }
             
-            const corrected = applyTargetedOCRCorrections(cleaned);
-            if (corrected !== cleaned) {
+            const corrected = applyTargetedOCRCorrections(aqCorrected);
+            if (corrected !== aqCorrected) {
                 const correctedScore = scoreRegistrationCandidate(corrected);
                 if (correctedScore > 0) {
                     candidates.push({ text: corrected, score: correctedScore, source: `line_${index + 1}_corrected` });
@@ -170,13 +338,16 @@ function parseIndianRegistrationNumber(textArray) {
             if (match) {
                 const combined = match.slice(1).join('').replace(/\s/g, '');
                 if (combined.length >= 8 && combined.length <= 10) {
-                    const score = scoreRegistrationCandidate(combined);
+                    // Apply mandatory AQ correction
+                    const aqCorrected = applyMandatoryAQCorrection(combined);
+                    
+                    const score = scoreRegistrationCandidate(aqCorrected);
                     if (score > 0) {
-                        candidates.push({ text: combined, score: score + 10, source: `spaced_line_${index + 1}` });
+                        candidates.push({ text: aqCorrected, score: score + 10, source: `spaced_line_${index + 1}_aq_corrected` });
                     }
                     
-                    const corrected = applyTargetedOCRCorrections(combined);
-                    if (corrected !== combined) {
+                    const corrected = applyTargetedOCRCorrections(aqCorrected);
+                    if (corrected !== aqCorrected) {
                         const correctedScore = scoreRegistrationCandidate(corrected);
                         if (correctedScore > 0) {
                             candidates.push({ text: corrected, score: correctedScore + 10, source: `spaced_line_${index + 1}_corrected` });
@@ -190,9 +361,10 @@ function parseIndianRegistrationNumber(textArray) {
     // Strategy 3: Try combining text
     const allText = textArray.join('').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (allText.length >= 8 && allText.length <= 10) {
-        const score = scoreRegistrationCandidate(allText);
+        const aqCorrected = applyMandatoryAQCorrection(allText);
+        const score = scoreRegistrationCandidate(aqCorrected);
         if (score > 0) {
-            candidates.push({ text: allText, score: score - 20, source: 'combined' });
+            candidates.push({ text: aqCorrected, score: score - 20, source: 'combined_aq_corrected' });
         }
     }
     
@@ -205,9 +377,10 @@ function parseIndianRegistrationNumber(textArray) {
                 for (let len = 8; len <= 10; len++) {
                     if (stateIndex + len <= cleaned.length) {
                         const extracted = cleaned.substring(stateIndex, stateIndex + len);
-                        const score = scoreRegistrationCandidate(extracted);
+                        const aqCorrected = applyMandatoryAQCorrection(extracted);
+                        const score = scoreRegistrationCandidate(aqCorrected);
                         if (score > 0) {
-                            candidates.push({ text: extracted, score: score - 10, source: `extracted_${stateCode}_line_${index + 1}` });
+                            candidates.push({ text: aqCorrected, score: score - 10, source: `extracted_${stateCode}_line_${index + 1}_aq_corrected` });
                         }
                     }
                 }
@@ -230,6 +403,7 @@ function parseIndianRegistrationNumber(textArray) {
     
     if (uniqueCandidates.length > 0 && uniqueCandidates[0].score >= 100) {
         const best = uniqueCandidates[0];
+        console.log(`✅ Best candidate after mandatory AQ correction: ${best.text} (score: ${best.score})`);
         return [best.text];
     }
     
@@ -365,8 +539,8 @@ async function processBooking(booking) {
         'Image 3': 'N/A',
         'Image 4': 'N/A',
         'Best Percentage Match': 0,
-        '': 'N/A',
-        ' Percentage Match': 0,
+        'VIN': 'N/A',
+        'VIN Percentage Match': 0,
         'Match Status': '❌ NO MATCH',
         'Created': new Date(booking.created_at).toLocaleDateString()
     };
@@ -382,22 +556,12 @@ async function processBooking(booking) {
         const imageColumnName = `Image ${j + 1}`;
         
         try {
-            const ocrResponse = await fetch(`${OCR_SERVICE_URL}/ocr/registration-number-url`, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
-                body: JSON.stringify({ imageUrl: imageUrls[j] }),
-                timeout: 30000
-            });
+            const extractedText = await extractTextFromImageUrl(imageUrls[j]);
             
-            if (!ocrResponse.ok) {
-                rowData[imageColumnName] = `🔴 OCR Failed (${ocrResponse.status})`;
-                continue;
-            }
-            
-            const ocrResult = await ocrResponse.json();
+            const ocrResult = {
+                success: true,
+                extractedText: extractedText
+            };
             
             if (ocrResult.success) {
                 const smartDetectedNumbers = parseIndianRegistrationNumber(ocrResult.extractedText || []);
@@ -441,7 +605,8 @@ async function processBooking(booking) {
                 allSimilarities.push(0);
             }
         } catch (error) {
-            rowData[imageColumnName] = `🔴 Network Error`;
+            console.error(`Error processing image ${j + 1} for booking ${booking.booking_id}:`, error.message);
+            rowData[imageColumnName] = `🔴 ${error.message.includes('Azure') ? 'OCR Service Error' : 'Network Error'}`;
             allSimilarities.push(0);
         }
         
@@ -533,11 +698,11 @@ async function checkForNewBookings() {
             newBookings.forEach(booking => {
                 if (!processingQueue.has(booking.booking_id)) {
                     processingQueue.add(booking.booking_id);
-                    processBookingAsync(booking); // Don't await this!
+                    processBookingAsync(booking);
                 }
             });
             
-            // Update lastProcessedBookingId immediately (don't wait for processing)
+            // Update lastProcessedBookingId immediately
             const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
             lastProcessedBookingId = maxBookingId;
             console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
@@ -581,7 +746,6 @@ async function processBookingAsync(booking) {
     }
 }
 
-// Helper function to get the current maximum booking ID
 async function getCurrentMaxBookingId() {
     const client = new Client(dbConfig);
     
@@ -608,10 +772,74 @@ async function getCurrentMaxBookingId() {
 // API ENDPOINTS
 // =====================================================================================
 
-// Enhanced smart endpoint for dashboard compatibility
+app.post('/ocr/registration-number-url', async (req, res) => {
+    try {
+        const { imageUrl, actualRegNumber } = req.body;
+        
+        if (!imageUrl) {
+            return res.status(400).json({ error: 'Image URL is required' });
+        }
+
+        if (!computerVisionClient) {
+            return res.status(503).json({ 
+                error: 'OCR service not available',
+                details: 'Azure Computer Vision not configured. Set VISION_KEY and VISION_ENDPOINT environment variables.'
+            });
+        }
+
+        const extractedText = await extractTextFromImageUrl(imageUrl);
+        const registrationNumbers = parseIndianRegistrationNumber(extractedText);
+        
+        // Build response object
+        const response = {
+            success: true,
+            extractedText: extractedText,
+            registrationNumbers: registrationNumbers,
+            message: registrationNumbers.length > 0 ? `Found ${registrationNumbers.length} registration number(s)` : 'No registration numbers detected'
+        };
+
+        // If actualRegNumber is provided, calculate VIN match and similarity
+        if (actualRegNumber && registrationNumbers.length > 0) {
+            const detectedRegNumber = registrationNumbers[0]; // Use first detected number
+            
+            // Calculate VIN match (last 4 digits)
+            const vinMatch = calculateVINMatch(actualRegNumber, detectedRegNumber);
+            
+            // Calculate overall similarity
+            const overallSimilarity = calculateSimilarity(actualRegNumber, detectedRegNumber);
+            
+            // Get last 4 digits for comparison
+            const actualLast4 = getLast4Digits(actualRegNumber);
+            const detectedLast4 = getLast4Digits(detectedRegNumber);
+            
+            // Add comparison data to response
+            response.comparison = {
+                actual_reg_number: actualRegNumber,
+                detected_reg_number: detectedRegNumber,
+                vin_match_percentage: vinMatch,
+                overall_similarity_percentage: overallSimilarity,
+                actual_last_4_digits: actualLast4,
+                detected_last_4_digits: detectedLast4,
+                vin_match_exact: vinMatch === 100,
+                overall_match_exact: overallSimilarity === 100
+            };
+            
+            response.message += ` | VIN Match: ${vinMatch}% | Overall Similarity: ${overallSimilarity}%`;
+        }
+        
+        res.json(response);
+        
+    } catch (error) {
+        console.error('OCR Error:', error);
+        res.status(500).json({
+            error: 'OCR processing failed',
+            details: error.message
+        });
+    }
+});
+
 app.get('/analyze/smart', async (req, res) => {
     try {
-        // Return recent processed bookings from cache
         const accuracy = monitoringStats.totalBookingsProcessed > 0 ? 
                         Math.round((monitoringStats.vinAccurateMatches / monitoringStats.totalBookingsProcessed) * 100) : 0;
         
@@ -697,12 +925,19 @@ app.get('/export/results', (req, res) => {
 
 // Start continuous monitoring
 app.post('/monitor/start', async (req, res) => {
-    const { hours = 4 } = req.body;
+    const hours = req.body?.hours || 4;
     
     if (isMonitoring) {
         return res.status(400).json({
             error: 'Monitoring is already running',
             current_stats: monitoringStats
+        });
+    }
+
+    if (!computerVisionClient) {
+        return res.status(503).json({
+            error: 'Cannot start monitoring - OCR service not available',
+            details: 'Azure Computer Vision not configured. Set VISION_KEY and VISION_ENDPOINT environment variables.'
         });
     }
     
@@ -719,7 +954,6 @@ app.post('/monitor/start', async (req, res) => {
         lastProcessedBooking: null
     };
     
-    // Clear cache
     processedBookingsCache = [];
     
     const endTime = Date.now() + (hours * 60 * 60 * 1000);
@@ -740,7 +974,7 @@ app.post('/monitor/start', async (req, res) => {
         }
         
         await checkForNewBookings();
-    }, 30000); // Check every 30 seconds
+    }, 30000);
     
     res.json({
         success: true,
@@ -781,8 +1015,8 @@ app.post('/monitor/stop', (req, res) => {
         final_stats: {
             runtime_ms: runtime,
             total_bookings_processed: monitoringStats.totalBookingsProcessed,
-            exact_matches: monitoringStats.vinAccurateMatches, // For dashboard compatibility
-            accuracy_percentage: accuracy, // Now VIN-based
+            exact_matches: monitoringStats.vinAccurateMatches,
+            accuracy_percentage: accuracy,
             failed_processing: monitoringStats.failedProcessing,
             last_processed_booking: monitoringStats.lastProcessedBooking,
             last_processed_booking_id: lastProcessedBookingId,
@@ -793,19 +1027,22 @@ app.post('/monitor/stop', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
+
+    const ocrStatus = computerVisionClient ? 'Available' : 'Not Configured';
+
     res.json({ 
         status: 'OK', 
         service: 'Continuous Registration Monitoring Service',
         monitoring_active: isMonitoring,
-        ocr_service_url: OCR_SERVICE_URL,
+        ocr_service_status: ocrStatus,
         cached_results: processedBookingsCache.length,
         last_processed_booking_id: lastProcessedBookingId,
         accuracy_method: 'VIN-based',
-        vin_threshold: VIN_ACCURACY_THRESHOLD
+        vin_threshold: VIN_ACCURACY_THRESHOLD,
+        azure_vision_configured: !!computerVisionClient
     });
 });
 
-// Start the monitoring service
 app.listen(ANALYSIS_PORT, () => {
     console.log(`🔬 Continuous Registration Monitoring Service running on port ${ANALYSIS_PORT}`);
     console.log(`🎯 Accuracy Calculation: VIN-based (${VIN_ACCURACY_THRESHOLD}% threshold)`);
@@ -816,11 +1053,26 @@ app.listen(ANALYSIS_PORT, () => {
     console.log(`  🛑 Stop Monitoring: POST http://localhost:${ANALYSIS_PORT}/monitor/stop`);
     console.log(`  📊 Check Status: GET http://localhost:${ANALYSIS_PORT}/monitor/status`);
     console.log(`  📁 Export Results: GET http://localhost:${ANALYSIS_PORT}/export/results?format=[json|csv]`);
+    console.log(`  🔍 Direct OCR: POST http://localhost:${ANALYSIS_PORT}/ocr/registration-number-url`);
     console.log(`  ❤️  Health Check: GET http://localhost:${ANALYSIS_PORT}/health`);
-    console.log(`\n🔗 OCR Service: ${OCR_SERVICE_URL}`);
     console.log(`🎯 Ready for real-time monitoring of new bookings!`);
     console.log(`📊 Accuracy will be calculated based on VIN percentage matches instead of exact matches`);
+
+    if (!computerVisionClient) {
+        console.log(`\n⚠️  WARNING: Set VISION_KEY and VISION_ENDPOINT environment variables to enable OCR functionality`);
+    }
+    
     console.log(`\nOpen http://localhost:${ANALYSIS_PORT}/ to view the monitoring dashboard`);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('🚨 Uncaught Exception:', error);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
 });
 
 export default app;
