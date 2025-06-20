@@ -5,9 +5,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
-    "analyze": "node analysis-service.js",
-    "dev": "nodemon index.js",
-    "dev-analyze": "nodemon analysis-service.js"
+    "analyze": "node backend/analysis-service.js",
+    "dev": "node index.js",
+    "dev-analyze": "node backend/analysis-service.js"
   },
   "type": "module",
   "author": "",

@@ -89,7 +89,7 @@ app.use(express.json());
 
 // Serve the monitoring dashboard
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'monitoring-dashboard.html'));
+    res.sendFile(path.join(__dirname, '../index.html'));
 });
 
 // Function to extract text from image buffer using Azure OCR
@@ -253,19 +253,24 @@ function scoreRegistrationCandidate(str) {
     return score;
 }
 
-function applyMandatoryAQCorrection(text) {
+function applyMandatoryPatternCorrection(text) {
     const normalized = normalizeRegNumber(text);
     console.log('=== AQ Pattern Correction ===');
     console.log('Original detected:', text);
     console.log('After normalization:', normalized);
     
-    // Pattern: KA + 2digits + A0 + 4digits (length 9 or 10)
     const aqPattern = /^(KA\d{1,2})A0(\d+)$/;
     const match = normalized.match(aqPattern);
+    const dlsevPattern = /^DLSEV(\d+)$/;
+    const dlsevMatch = normalized.match(dlsevPattern);
     
     if (match) {
         const corrected = match[1] + 'AQ' + match[2];
         console.log(`🔧 Mandatory AQ Pattern Applied: ${normalized} → ${corrected}`);
+        return corrected;
+    } else if (dlsevMatch) {
+        const corrected = 'DL9EV' + dlsevMatch[1];
+        console.log(`🔧 Mandatory DLSEV Pattern Applied: ${normalized} → ${corrected}`);
         return corrected;
     }
     
@@ -310,7 +315,7 @@ function parseIndianRegistrationNumber(textArray) {
         
         if (cleaned.length >= 8 && cleaned.length <= 10) {
             // Apply mandatory AQ correction FIRST, before any scoring
-            const aqCorrected = applyMandatoryAQCorrection(cleaned);
+            const aqCorrected = applyMandatoryPatternCorrection(cleaned);
             const score = scoreRegistrationCandidate(aqCorrected);
             if (score > 0) {
                 candidates.push({ text: aqCorrected, score, source: `line_${index + 1}_aq_corrected` });
@@ -339,7 +344,7 @@ function parseIndianRegistrationNumber(textArray) {
                 const combined = match.slice(1).join('').replace(/\s/g, '');
                 if (combined.length >= 8 && combined.length <= 10) {
                     // Apply mandatory AQ correction
-                    const aqCorrected = applyMandatoryAQCorrection(combined);
+                    const aqCorrected = applyMandatoryPatternCorrection(combined);
                     
                     const score = scoreRegistrationCandidate(aqCorrected);
                     if (score > 0) {
@@ -361,7 +366,7 @@ function parseIndianRegistrationNumber(textArray) {
     // Strategy 3: Try combining text
     const allText = textArray.join('').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (allText.length >= 8 && allText.length <= 10) {
-        const aqCorrected = applyMandatoryAQCorrection(allText);
+        const aqCorrected = applyMandatoryPatternCorrection(allText);
         const score = scoreRegistrationCandidate(aqCorrected);
         if (score > 0) {
             candidates.push({ text: aqCorrected, score: score - 20, source: 'combined_aq_corrected' });
@@ -377,7 +382,7 @@ function parseIndianRegistrationNumber(textArray) {
                 for (let len = 8; len <= 10; len++) {
                     if (stateIndex + len <= cleaned.length) {
                         const extracted = cleaned.substring(stateIndex, stateIndex + len);
-                        const aqCorrected = applyMandatoryAQCorrection(extracted);
+                        const aqCorrected = applyMandatoryPatternCorrection(extracted);
                         const score = scoreRegistrationCandidate(aqCorrected);
                         if (score > 0) {
                             candidates.push({ text: aqCorrected, score: score - 10, source: `extracted_${stateCode}_line_${index + 1}_aq_corrected` });
@@ -699,13 +704,17 @@ async function checkForNewBookings() {
                 if (!processingQueue.has(booking.booking_id)) {
                     processingQueue.add(booking.booking_id);
                     processBookingAsync(booking);
+                    // Update lastProcessedBookingId immediately
+                    const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
+                    lastProcessedBookingId = maxBookingId;
+                    console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
                 }
             });
             
-            // Update lastProcessedBookingId immediately
-            const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
-            lastProcessedBookingId = maxBookingId;
-            console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
+            // // Update lastProcessedBookingId immediately
+            // const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
+            // lastProcessedBookingId = maxBookingId;
+            // console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
         }
         
     } catch (error) {
