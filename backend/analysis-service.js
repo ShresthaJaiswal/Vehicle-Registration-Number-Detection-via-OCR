@@ -697,13 +697,12 @@ async function checkForNewBookings() {
                     // Update lastProcessedBookingId immediately
                     const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
                     lastProcessedBookingId = maxBookingId;
-                    console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
+                    console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingID} (processing ${processingQueue.size} bookings in background)`);
                 }
             });
             
             // // Update lastProcessedBookingId immediately
             // const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
-            // lastProcessedBookingId = maxBookingId;
             // console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
         }
         
@@ -752,8 +751,13 @@ async function getCurrentMaxBookingId() {
         await client.connect();
         
         const query = `
-            SELECT COALESCE(MAX(id), 0) as max_id 
-            FROM public.booking
+            SELECT COALESCE(MAX(b.id), 0) as max_id 
+            FROM public.booking b
+            LEFT JOIN public.bike bk ON b.bike_id = bk.id
+            WHERE b.booking_starting_images IS NOT NULL 
+                AND b.booking_starting_images != ''
+                AND bk.reg_number IS NOT NULL
+                AND b.status = 'booking started and is in progress'
         `;
         
         const result = await client.query(query);
@@ -849,7 +853,7 @@ app.get('/analyze/smart', async (req, res) => {
             accuracy_percentage: accuracy,
             exact_matches: monitoringStats.vinAccurateMatches,
             total_processed: monitoringStats.totalBookingsProcessed,
-            table_data: processedBookingsCache.slice(0, 50) // Return last 50 for dashboard
+            table_data: processedBookingsCache.slice(0, 100) // Return last 100 for dashboard
         });
         
     } catch (error) {
@@ -861,7 +865,6 @@ app.get('/analyze/smart', async (req, res) => {
     }
 });
 
-// Export results from cache
 app.get('/export/results', (req, res) => {
     try {
         const format = req.query.format || 'json';
@@ -922,7 +925,6 @@ app.get('/export/results', (req, res) => {
     }
 });
 
-// Start continuous monitoring
 app.post('/monitor/start', async (req, res) => {
     const hours = req.body?.hours || 4;
     
@@ -973,7 +975,7 @@ app.post('/monitor/start', async (req, res) => {
         }
         
         await checkForNewBookings();
-    }, 30000);
+    }, 60000);
     
     res.json({
         success: true,
@@ -986,7 +988,6 @@ app.post('/monitor/start', async (req, res) => {
     });
 });
 
-// Stop monitoring
 app.post('/monitor/stop', (req, res) => {
     if (!isMonitoring) {
         return res.status(400).json({
@@ -994,7 +995,6 @@ app.post('/monitor/stop', (req, res) => {
         });
     }
     
-    // Clear the monitoring interval
     if (currentMonitoringInterval) {
         clearInterval(currentMonitoringInterval);
         currentMonitoringInterval = null;
@@ -1024,7 +1024,6 @@ app.post('/monitor/stop', (req, res) => {
     });
 });
 
-// Health check
 app.get('/health', (req, res) => {
 
     const ocrStatus = computerVisionClient ? 'Available' : 'Not Configured';

@@ -64,9 +64,9 @@ function addLogEntry(message, type = 'info') {
 
     logSection.insertBefore(entry, logSection.firstChild);
 
-    // Keep only last 50 entries
+    // Keep only last 100 entries
     const entries = logSection.querySelectorAll('.log-entry');
-    if (entries.length > 50) {
+    if (entries.length > 100) {
         entries[entries.length - 1].remove();
     }
 }
@@ -298,8 +298,8 @@ function clearTable() {
 }
 
 // Initialize runtime display
-updateRunTime();
-updateStats();
+// updateRunTime();
+// updateStats();
 
 // Initialize page
 window.onload = function () {
