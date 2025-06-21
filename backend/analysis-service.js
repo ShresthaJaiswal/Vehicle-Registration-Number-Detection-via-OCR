@@ -12,7 +12,7 @@ import { ApiKeyCredentials } from '@azure/ms-rest-js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const sleep = promisify(setTimeout);       // why?
+const sleep = promisify(setTimeout);
 
 // =====================================================================================
 // CONTINUOUS ANALYSIS SERVICE WITH REAL-TIME MONITORING
@@ -27,6 +27,14 @@ const dbConfig = {
     database: 'bounceb2b',
     user: 'postgres',
     password: '37s_.gP0[o$[9CDo',
+};
+
+const testDbConfig = {
+    host: '34.135.250.20',
+    port: 5432,
+    database: 'bounceb2btest', // Test DB for writing results
+    user: 'postgres',
+    password: 'MR=}B\\2:L#<mBU*t',
 };
 
 // Azure Computer Vision configuration
@@ -536,7 +544,7 @@ async function processBooking(booking) {
         'Best Percentage Match': 0,
         'VIN': 'N/A',
         'VIN Percentage Match': 0,
-        'Match Status': '❌ NO MATCH',
+        'Match Status': 'NO MATCH',
         'Created': new Date(booking.created_at).toLocaleDateString()
     };
     
@@ -582,26 +590,26 @@ async function processBooking(booking) {
                     
                     if (similarity === 100) {
                         hasExactMatch = true;
-                        rowData[imageColumnName] = `✅ ${detected}`;
+                        rowData[imageColumnName] = `${detected}`;
                     } else if (similarity > 80) {
-                        rowData[imageColumnName] = `🟡 ${detected}`;
+                        rowData[imageColumnName] = `${detected}`;
                     } else {
-                        rowData[imageColumnName] = `❌ ${detected}`;
+                        rowData[imageColumnName] = `${detected}`;
                     }
                 } else {
                     const errorReasons = analyzeImageError(ocrResult, imageUrls[j]);
                     const primaryError = errorReasons[0] || 'Unknown detection issue';
-                    rowData[imageColumnName] = `❌ ${primaryError}`;
+                    rowData[imageColumnName] = `${primaryError}`;
                     allSimilarities.push(0);
                 }
             } else {
                 const errorMessage = ocrResult.error || 'Unknown OCR error';
-                rowData[imageColumnName] = `🔴 ${errorMessage}`;
+                rowData[imageColumnName] = `${errorMessage}`;
                 allSimilarities.push(0);
             }
         } catch (error) {
             console.error(`Error processing image ${j + 1} for booking ${booking.booking_id}:`, error.message);
-            rowData[imageColumnName] = `🔴 ${error.message.includes('Azure') ? 'OCR Service Error' : 'Network Error'}`;
+            rowData[imageColumnName] = `${error.message.includes('Azure') ? 'OCR Service Error' : 'Network Error'}`;
             allSimilarities.push(0);
         }
         
@@ -624,7 +632,7 @@ async function processBooking(booking) {
     
     // Update final status
     if (hasExactMatch) {
-        rowData['Match Status'] = '✅ EXACT MATCH';
+        rowData['Match Status'] = 'EXACT MATCH';
     }
     
     return rowData;
@@ -662,48 +670,19 @@ async function checkForNewBookings() {
         if (newBookings.length > 0) {
             console.log(`DEBUG: Running query with lastProcessedBookingId: ${lastProcessedBookingId}`);
             console.log(`🆕 Found ${newBookings.length} new booking(s) to process...`);
-            
-        //     for (const booking of newBookings) {
-        //         console.log(`📋 Processing Booking ID: ${booking.booking_id} (Status: ${booking.booking_status})`);
-                
-        //         const processingResult = await processBooking(booking);
-                
-        //         // Add to cache for dashboard
-        //         processedBookingsCache.unshift(processingResult);
-        //         if (processedBookingsCache.length > MAX_CACHE_SIZE) {
-        //             processedBookingsCache.pop();
-        //         }
-                
-        //         // Update stats
-        //         monitoringStats.totalBookingsProcessed++;
-        //         if (processingResult['VIN Percentage Match'] >= VIN_ACCURACY_THRESHOLD) {
-        //             monitoringStats.vinAccurateMatches++;
-        //         }
-        //         monitoringStats.lastProcessedBooking = booking.booking_id;
-                
-        //         console.log(`✅ Processed Booking ${booking.booking_id} - ${processingResult['Match Status']} - VIN: ${processingResult['VIN Percentage Match']}%`);
-                
-        //         // Update lastProcessedBookingId to this booking's ID
-        //         lastProcessedBookingId = booking.booking_id;
-        //     }
-        // }
 
-
-            // Start processing all bookings asynchronously (don't wait)
+            // Start processing all bookings asynchronously
             newBookings.forEach(booking => {
                 if (!processingQueue.has(booking.booking_id)) {
                     processingQueue.add(booking.booking_id);
                     processBookingAsync(booking);
-                    // Update lastProcessedBookingId immediately
-                    const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
-                    lastProcessedBookingId = maxBookingId;
-                    console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingID} (processing ${processingQueue.size} bookings in background)`);
                 }
             });
             
-            // // Update lastProcessedBookingId immediately
-            // const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
-            // console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
+            // Update lastProcessedBookingId immediately
+            const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
+            lastProcessedBookingId = maxBookingId;
+            console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
         }
         
     } catch (error) {
@@ -719,6 +698,10 @@ async function processBookingAsync(booking) {
         console.log(`📋 Starting async processing of Booking ID: ${booking.booking_id}`);
         
         const processingResult = await processBooking(booking);
+
+        saveProcessingResultToTestDB(processingResult).catch(err => {
+            console.error(`Failed to save booking ${booking.booking_id} to test DB:`, err.message);
+        });
         
         // Add to cache for dashboard
         processedBookingsCache.unshift(processingResult);
@@ -766,6 +749,55 @@ async function getCurrentMaxBookingId() {
     } catch (error) {
         console.error('Error getting max booking ID:', error.message);
         return 0;
+    } finally {
+        await client.end();
+    }
+}
+
+async function saveProcessingResultToTestDB(rowData) {
+    const client = new Client(testDbConfig); // Using test DB config
+    
+    try {
+        await client.connect();
+        
+        const insertQuery = `
+            INSERT INTO analysis_results (
+                booking_id,
+                actual_registration,
+                image_1,
+                image_2,
+                image_3,
+                image_4,
+                best_percentage_match,
+                vin,
+                vin_percentage_match,
+                match_status,
+                created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+            RETURNING id;
+        `;
+        
+        const values = [
+            rowData['Booking ID'].toString(), // Convert to VARCHAR
+            rowData['Actual Registration'],
+            rowData['Image 1'],
+            rowData['Image 2'],
+            rowData['Image 3'],
+            rowData['Image 4'],
+            parseFloat(rowData['Best Percentage Match']) || 0.00, // Convert to DECIMAL
+            rowData['VIN'],
+            parseFloat(rowData['VIN Percentage Match']) || 0.00, // Convert to DECIMAL
+            rowData['Match Status']
+        ];
+        
+        const result = await client.query(insertQuery, values);
+        console.log(`💾 Saved processing result to TEST DB (analysis_results) with ID: ${result.rows[0].id}`);
+        
+        return result.rows[0].id;
+        
+    } catch (error) {
+        console.error(`❌ Error saving to TEST database:`, error.message);
+        // Don't throw error - we don't want to break the main processing if DB save fails
     } finally {
         await client.end();
     }
