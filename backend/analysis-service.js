@@ -15,7 +15,7 @@ const __dirname = path.dirname(__filename);
 const sleep = promisify(setTimeout);
 
 // =====================================================================================
-// CONTINUOUS ANALYSIS SERVICE WITH REAL-TIME MONITORING
+// ANALYSIS SERVICE WITH REAL-TIME MONITORING
 // =====================================================================================
 
 const { Client } = pg;
@@ -32,7 +32,7 @@ const dbConfig = {
 const testDbConfig = {
     host: '34.135.250.20',
     port: 5432,
-    database: 'bounceb2btest', // Test DB for writing results
+    database: 'bounceb2btest', // Test DB
     user: 'postgres',
     password: 'MR=}B\\2:L#<mBU*t',
 };
@@ -51,7 +51,7 @@ const ANALYSIS_PORT = 3001;
 const VIN_ACCURACY_THRESHOLD = 100; // 100% VIN match required for counting as accurate
 
 // Global state for continuous monitoring
-let lastProcessedBookingId = 0;
+let lastProcessedTime = null;
 let isMonitoring = false;
 let currentMonitoringInterval = null;
 let monitoringStats = {
@@ -59,7 +59,8 @@ let monitoringStats = {
     totalBookingsProcessed: 0,
     vinAccurateMatches: 0,
     failedProcessing: 0,
-    lastProcessedBooking: null
+    lastProcessedBooking: null,
+    lastProcessedTime: null
 };
 
 // Real-time processed bookings cache (for the dashboard)
@@ -123,7 +124,7 @@ async function extractTextFromImageUrl(imageUrl) {
             detectOrientation: true,
         });
         
-        const operationId = readResult.operationLocation.split('/').slice(-1)[0];    // why use async operation?
+        const operationId = readResult.operationLocation.split('/').slice(-1)[0];
         
         let result;
         let attempts = 0;
@@ -504,7 +505,6 @@ function calculateSimilarity(actual, detected) {
 function getLast4Digits(regNumber) {
     if (!regNumber) return '';
     const normalized = normalizeRegNumber(regNumber);
-    // Extract last 4 characters (typically digits)
     return normalized.slice(-4);
 }
 
@@ -545,7 +545,7 @@ async function processBooking(booking) {
         'VIN': 'N/A',
         'VIN Percentage Match': 0,
         'Match Status': 'NO MATCH',
-        'Created': new Date(booking.created_at).toLocaleDateString()
+        'Created': new Date(booking.booking_start_time).toLocaleDateString()
     };
     
     let hasExactMatch = false;
@@ -653,22 +653,22 @@ async function checkForNewBookings() {
                 b.status as booking_status,
                 b.booking_starting_images,
                 bk.reg_number as actual_reg_number,
-                b.created_at
+                b.booking_start_time
             FROM public.booking b
             LEFT JOIN public.bike bk ON b.bike_id = bk.id
             WHERE b.booking_starting_images IS NOT NULL 
                 AND b.booking_starting_images != ''
                 AND bk.reg_number IS NOT NULL
-                AND b.id > $1
+                AND b.booking_start_time > $1
                 AND b.status = 'booking started and is in progress'
-            ORDER BY b.id ASC
+            ORDER BY b.booking_start_time ASC
         `;
 
-        const result = await client.query(query, [lastProcessedBookingId]);
+        const result = await client.query(query, [lastProcessedTime]);
         const newBookings = result.rows;
         
         if (newBookings.length > 0) {
-            console.log(`DEBUG: Running query with lastProcessedBookingId: ${lastProcessedBookingId}`);
+            console.log(`DEBUG: Running query with lastProcessedTime: ${lastProcessedTime}`);
             console.log(`🆕 Found ${newBookings.length} new booking(s) to process...`);
 
             // Start processing all bookings asynchronously
@@ -679,10 +679,10 @@ async function checkForNewBookings() {
                 }
             });
             
-            // Update lastProcessedBookingId immediately
-            const maxBookingId = Math.max(...newBookings.map(b => b.booking_id));
-            lastProcessedBookingId = maxBookingId;
-            console.log(`📍 Updated lastProcessedBookingId to: ${lastProcessedBookingId} (processing ${processingQueue.size} bookings in background)`);
+            // Update lastProcessedTime immediately
+            const latestBookingTime = new Date(Math.max(...newBookings.map(b => new Date(b.booking_start_time))));
+            lastProcessedTime = latestBookingTime;
+            console.log(`📍 Updated lastProcessedTime to: ${lastProcessedTime} (processing ${processingQueue.size} bookings in background)`);
         }
         
     } catch (error) {
@@ -695,7 +695,7 @@ async function checkForNewBookings() {
 
 async function processBookingAsync(booking) {
     try {
-        console.log(`📋 Starting async processing of Booking ID: ${booking.booking_id}`);
+        console.log(`📋 Starting async processing of Booking ID: ${booking.booking_id} (Start Time: ${booking.booking_start_time})`);
         
         const processingResult = await processBooking(booking);
 
@@ -715,6 +715,7 @@ async function processBookingAsync(booking) {
             monitoringStats.vinAccurateMatches++;
         }
         monitoringStats.lastProcessedBooking = booking.booking_id;
+        monitoringStats.lastProcessedTime = booking.booking_start_time;
         
         console.log(`✅ Completed async processing of Booking ${booking.booking_id} - ${processingResult['Match Status']} - VIN: ${processingResult['VIN Percentage Match']}%`);
         
@@ -727,14 +728,14 @@ async function processBookingAsync(booking) {
     }
 }
 
-async function getCurrentMaxBookingId() {
+async function getCurrentLatestBookingTime() {
     const client = new Client(dbConfig);
     
     try {
         await client.connect();
         
         const query = `
-            SELECT COALESCE(MAX(b.id), 0) as max_id 
+            SELECT COALESCE(MAX(b.booking_start_time), NOW() AT TIME ZONE 'UTC') as latest_time 
             FROM public.booking b
             LEFT JOIN public.bike bk ON b.bike_id = bk.id
             WHERE b.booking_starting_images IS NOT NULL 
@@ -744,11 +745,13 @@ async function getCurrentMaxBookingId() {
         `;
         
         const result = await client.query(query);
-        return result.rows[0].max_id;
+        return result.rows[0].latest_time;
         
     } catch (error) {
         console.error('Error getting max booking ID:', error.message);
-        return 0;
+        const utcNow = new Date();
+        console.log(`📅 Using fallback current time (UTC): ${utcNow}`);
+        return utcNow;
     } finally {
         await client.end();
     }
@@ -773,7 +776,7 @@ async function saveProcessingResultToTestDB(rowData) {
                 vin_percentage_match,
                 match_status,
                 created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW() AT TIME ZONE 'UTC')
             RETURNING id;
         `;
         
@@ -885,7 +888,7 @@ app.get('/analyze/smart', async (req, res) => {
             accuracy_percentage: accuracy,
             exact_matches: monitoringStats.vinAccurateMatches,
             total_processed: monitoringStats.totalBookingsProcessed,
-            table_data: processedBookingsCache.slice(0, 100) // Return last 100 for dashboard
+            table_data: processedBookingsCache.slice(0, 100)
         });
         
     } catch (error) {
@@ -976,15 +979,16 @@ app.post('/monitor/start', async (req, res) => {
     
     isMonitoring = true;
     
-    // Get the current maximum booking ID to start monitoring from
-    lastProcessedBookingId = await getCurrentMaxBookingId();
+    // Get the latest booking_start_time to start monitoring from
+    lastProcessedTime = await getCurrentLatestBookingTime();
     
     monitoringStats = {
         startTime: Date.now(),
         totalBookingsProcessed: 0,
         vinAccurateMatches: 0,
         failedProcessing: 0,
-        lastProcessedBooking: null
+        lastProcessedBooking: null,
+        lastProcessedTime: lastProcessedTime
     };
     
     processedBookingsCache = [];
@@ -993,8 +997,8 @@ app.post('/monitor/start', async (req, res) => {
     
     console.log(`🚀 Starting continuous monitoring for ${hours} hours...`);
     console.log(`⏰ Start time: ${new Date().toLocaleString()}`);
-    console.log(`🔍 Only processing bookings with ID > ${lastProcessedBookingId} and status = 'booking started and is in progress'`);
-    console.log(`🔍 Checking every 30 seconds for new bookings...`);
+    console.log(`🔍 Only processing bookings with booking_start_time > ${lastProcessedTime} and status = 'booking started and is in progress'`);
+    console.log(`🔍 Checking every 60 seconds for new bookings...`);
     console.log(`🎯 Accuracy calculation: VIN-based (${VIN_ACCURACY_THRESHOLD}% threshold)`);
     
     currentMonitoringInterval = setInterval(async () => {
@@ -1012,11 +1016,12 @@ app.post('/monitor/start', async (req, res) => {
     res.json({
         success: true,
         message: `Continuous monitoring started for ${hours} hours`,
-        monitoring_interval_seconds: 30,
+        monitoring_interval_seconds: 60,
         start_time: new Date().toISOString(),
         will_stop_at: new Date(endTime).toISOString(),
-        starting_from_booking_id: lastProcessedBookingId,
-        status_filter: 'booking started and is in progress'
+        starting_from_time: lastProcessedTime,
+        status_filter: 'booking started and is in progress',
+        processing_method: 'time-based using booking_start_time'
     });
 });
 
@@ -1050,8 +1055,9 @@ app.post('/monitor/stop', (req, res) => {
             accuracy_percentage: accuracy,
             failed_processing: monitoringStats.failedProcessing,
             last_processed_booking: monitoringStats.lastProcessedBooking,
-            last_processed_booking_id: lastProcessedBookingId,
-            status_filter: 'booking started and is in progress'
+            last_processed_time: monitoringStats.lastProcessedTime,
+            status_filter: 'booking started and is in progress',
+            processing_method: 'time-based using booking_start_time'
         }
     });
 });
@@ -1066,7 +1072,7 @@ app.get('/health', (req, res) => {
         monitoring_active: isMonitoring,
         ocr_service_status: ocrStatus,
         cached_results: processedBookingsCache.length,
-        last_processed_booking_id: lastProcessedBookingId,
+        last_processed_time: lastProcessedTime,
         accuracy_method: 'VIN-based',
         vin_threshold: VIN_ACCURACY_THRESHOLD,
         azure_vision_configured: !!computerVisionClient
